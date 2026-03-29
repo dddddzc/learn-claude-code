@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations, useLocale } from "@/lib/i18n";
 import { Github, Menu, X, Sun, Moon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
@@ -24,14 +24,16 @@ export function Header() {
   const pathname = usePathname();
   const locale = useLocale();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [dark, setDark] = useState(() => {
-    if (typeof window !== "undefined") {
-      const stored = localStorage.getItem("theme");
-      if (stored) return stored === "dark";
-      return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const [dark, setDark] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("theme");
+    if (stored) {
+      setDark(stored === "dark");
+      return;
     }
-    return false;
-  });
+    setDark(window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }, []);
 
   function toggleDark() {
     const next = !dark;
