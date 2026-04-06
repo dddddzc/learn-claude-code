@@ -93,6 +93,8 @@ class SkillLoader:
             return {}, text
         meta = {}
         # 逐行解析元数据，遇到第一个冒号分割键值。
+        # match.group(1) 是 frontmatter 部分，strip 去除首尾空白后按行分割。
+        # match.group(2) 是正文部分，strip 去除首尾空白后作为技能内容。
         for line in match.group(1).strip().splitlines():
             if ":" in line:
                 key, val = line.split(":", 1)
@@ -127,9 +129,10 @@ class SkillLoader:
         return f"<skill name=\"{name}\">\n{skill['body']}\n</skill>"
 
 
+# 启动时构建技能加载器，后续由 load_skill 工具按名称取用技能正文。
 SKILL_LOADER = SkillLoader(SKILLS_DIR)
 
-# Layer 1: skill metadata injected into system prompt
+# 第一层注入：仅把技能名/描述放进 system，保持提示词轻量。
 SYSTEM = f"""You are a coding agent at {WORKDIR}.
 Use load_skill to access specialized knowledge before tackling unfamiliar topics.
 
@@ -145,6 +148,7 @@ def safe_path(p: str) -> Path:
         raise ValueError(f"Path escapes workspace: {p}")
     return path
 
+
 def run_bash(command: str) -> str:
     # 对高风险命令做最小黑名单拦截，降低误操作概率。
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
@@ -152,13 +156,20 @@ def run_bash(command: str) -> str:
         return "Error: Dangerous command blocked"
     try:
         # 在工作区中执行命令，统一收集 stdout/stderr 并设置超时。
-        r = subprocess.run(command, shell=True, cwd=WORKDIR,
-                           capture_output=True, text=True, timeout=120)
+        r = subprocess.run(
+            command,
+            shell=True,
+            cwd=WORKDIR,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
         out = (r.stdout + r.stderr).strip()
         # 限制工具输出大小，避免把超长日志注入上下文。
         return out[:50000] if out else "(no output)"
     except subprocess.TimeoutExpired:
         return "Error: Timeout (120s)"
+
 
 def run_read(path: str, limit: int = None) -> str:
     try:
@@ -172,6 +183,7 @@ def run_read(path: str, limit: int = None) -> str:
         # 统一返回字符串错误，避免工具调用中断对话流程。
         return f"Error: {e}"
 
+
 def run_write(path: str, content: str) -> str:
     try:
         fp = safe_path(path)
@@ -180,7 +192,9 @@ def run_write(path: str, content: str) -> str:
         fp.write_text(content)
         return f"Wrote {len(content)} bytes"
     except Exception as e:
+        # 统一字符串化异常，保持工具返回格式一致。
         return f"Error: {e}"
+
 
 def run_edit(path: str, old_text: str, new_text: str) -> str:
     try:
@@ -193,31 +207,73 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
         fp.write_text(content.replace(old_text, new_text, 1))
         return f"Edited {path}"
     except Exception as e:
+        # 统一字符串化异常，保持工具返回格式一致。
         return f"Error: {e}"
 
 
 TOOL_HANDLERS = {
     # 统一工具分发表：工具名 -> 本地执行函数。
-    "bash":       lambda **kw: run_bash(kw["command"]),
-    "read_file":  lambda **kw: run_read(kw["path"], kw.get("limit")),
+    "bash": lambda **kw: run_bash(kw["command"]),
+    "read_file": lambda **kw: run_read(kw["path"], kw.get("limit")),
     "write_file": lambda **kw: run_write(kw["path"], kw["content"]),
-    "edit_file":  lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
+    "edit_file": lambda **kw: run_edit(kw["path"], kw["old_text"], kw["new_text"]),
     # load_skill 不做文件写操作，只返回对应技能全文。
     "load_skill": lambda **kw: SKILL_LOADER.get_content(kw["name"]),
 }
 
 TOOLS = [
     # 工具 schema 提供给模型，用于约束可调用能力与参数结构。
-    {"name": "bash", "description": "Run a shell command.",
-     "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
-    {"name": "read_file", "description": "Read file contents.",
-     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["path"]}},
-    {"name": "write_file", "description": "Write content to file.",
-     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
-    {"name": "edit_file", "description": "Replace exact text in file.",
-     "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}, "required": ["path", "old_text", "new_text"]}},
-    {"name": "load_skill", "description": "Load specialized knowledge by name.",
-     "input_schema": {"type": "object", "properties": {"name": {"type": "string", "description": "Skill name to load"}}, "required": ["name"]}},
+    {
+        "name": "bash",
+        "description": "Run a shell command.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "read_file",
+        "description": "Read file contents.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "Write content to file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": "Replace exact text in file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            "required": ["path", "old_text", "new_text"],
+        },
+    },
+    {
+        "name": "load_skill",
+        "description": "Load specialized knowledge by name.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name to load"}
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 
@@ -225,8 +281,11 @@ def agent_loop(messages: list):
     # 经典 agent 循环：模型思考 -> 请求工具 -> 回填结果 -> 继续推理。
     while True:
         response = client.messages.create(
-            model=MODEL, system=SYSTEM, messages=messages,
-            tools=TOOLS, max_tokens=8000,
+            model=MODEL,
+            system=SYSTEM,
+            messages=messages,
+            tools=TOOLS,
+            max_tokens=8000,
         )
         # 保留 assistant 原始 block，确保上下文完整可追溯。
         messages.append({"role": "assistant", "content": response.content})
@@ -240,14 +299,24 @@ def agent_loop(messages: list):
                 handler = TOOL_HANDLERS.get(block.name)
                 try:
                     # 将 block.input 解包为关键字参数传给工具函数。
-                    output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
+                    output = (
+                        handler(**block.input)
+                        if handler
+                        else f"Unknown tool: {block.name}"
+                    )
                 except Exception as e:
                     # 工具异常转为文本，避免主循环崩溃。
                     output = f"Error: {e}"
                 # 打印简短执行日志，便于观察 agent 行为。
                 print(f"> {block.name}: {str(output)[:200]}")
                 # 按 Anthropic 协议回传 tool_result，绑定原 tool_use_id。
-                results.append({"type": "tool_result", "tool_use_id": block.id, "content": str(output)})
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": str(output),
+                    }
+                )
         # 以 user 角色注入工具结果，驱动下一轮推理。
         messages.append({"role": "user", "content": results})
 
