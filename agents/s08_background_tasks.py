@@ -96,7 +96,7 @@ class BackgroundManager:
         self.tasks[task_id]["status"] = status
         self.tasks[task_id]["result"] = output or "(no output)"
         with self._lock:
-            # 向通知队列推送精简结果；主循环会在下一轮注入给模型。
+            # 向通知队列推送结果；主循环会在下一轮注入给模型。
             self._notification_queue.append(
                 {
                     "task_id": task_id,
